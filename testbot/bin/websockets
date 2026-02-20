@@ -1,0 +1,6 @@
+#!/home/poojashree/Work/frappe-env/frappe-bench/apps/test_integration/test_integration/telegram_bot/testbot/bin/python3.12
+import sys
+from websockets.cli import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())

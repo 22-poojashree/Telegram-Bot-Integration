@@ -1,0 +1,5 @@
+TELEGRAM_BOT_TOKEN="8517759901:AAHarqst-vJZqKtl8DTRHJlgdXmkuQ26f8I"
+
+FRAPPE_URL="http://sitea.local:8000"
+API_KEY="xxxxxx"
+API_SECRET="xxxxxx"
