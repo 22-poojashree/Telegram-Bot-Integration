@@ -63,28 +63,42 @@ class TelegramLeaveBot:
         if not user:
             await message.reply_text("your telegram username is not linked , please contact admin")
             return
-        
         self.load_settings()
-        
         leave_info=self.parse_leave_request(message.text)
+        print("Leave Info:",leave_info)
         
         if not leave_info:
             await message.reply_text("I couldn't understand your leave request.")
             return
         
-        result=self.frappe_api.create_leave_application_draft(
-            employee_name=user["full_name"],
-            from_date=leave_info["from_date"],
-            to_date=leave_info["to_date"],
-            reason=leave_info["reason"],
-            half_day=leave_info["half_day"],
-            leave_type="Half Day" if leave_info.get("half_day") else "Full Day",
-        )
-        
-        if result["success"]:
-            await message.reply_text("Leave application draft created.")
+        if leave_info["leave_type"]!="Work From Home":
+            result=self.frappe_api.create_leave_application_draft(
+                employee_name=user["full_name"],
+                from_date=leave_info["from_date"],
+                to_date=leave_info["to_date"],
+                reason=leave_info["reason"],
+                half_day=leave_info["half_day"],
+                leave_type="Half Day" if leave_info.get("half_day") else "Full Day",
+            )
+            if result["success"]:
+                await message.reply_text("Leave application draft created.")
+            else:
+                await message.reply_text("failed to create leave application.")
+                
         else:
-            await message.reply_text("failed to create leave application.")
+            result=self.frappe_api.create_attendance_request_draft(
+                employee_name=user["email"],
+                from_date=leave_info["from_date"],
+                to_date=leave_info["to_date"],
+                reason=leave_info["reason"],
+                half_day=leave_info["half_day"],
+                leave_type="Work From Home",
+            )
+            if result["success"]:
+                await message.reply_text("Attendance request draft created.")
+            else:
+                await message.reply_text("failed to create attendance request.")
+            
             
     async def handle_mark_attendance(self,update:Update,context:ContextTypes.DEFAULT_TYPE):
         command=update.message
@@ -105,7 +119,8 @@ class TelegramLeaveBot:
         await command.reply_text("attendance marked for today.")
         
     def parse_leave_request(self,text):
-        if self.parsing_mode=="Rule Based":
+        print("Parsing mode:",self.parsing_mode)
+        if self.parsing_mode=="By Rules":
             return self.parse_by_rules(text)
         elif self.parsing_mode=="By AI API":
             return self.parse_by_deepseek(text)
@@ -119,10 +134,18 @@ class TelegramLeaveBot:
         text_lower=text.lower()
         actual_text=text_lower.replace("@apply_leave_bot","").strip()
         # print("actual_text:\n", actual_text)
+        leave=0
+        work_from_home=0
         leave_keywords=["leave","day off","absent","off","not available","vacation","holiday"]
-        if not any(k in actual_text for k in leave_keywords):
-            return None
+        work_from_home_keywords=["work from home","wfh","remote work","work remotely","working from home"]
         
+        if not any(k in actual_text for k in leave_keywords):
+            if not any(k in actual_text for k in work_from_home_keywords):
+                return None
+            else:
+                work_from_home=1
+        else:
+            leave=1
         
         half_day=0
         if any(k in actual_text for k in ["second half","2nd half","afternoon","post lunch","first half","1st half","morning","pre lunch"]):
@@ -179,20 +202,28 @@ class TelegramLeaveBot:
                 from_date=date_results[0][1].date()
                 to_date=from_date
         if not from_date:
-            return None
-        
+            from_date=today
+            to_date=today
         if half_day:
             to_date=from_date
 
         reason = actual_text.strip()
+        
+        result={
+               "from_date": from_date.strftime('%Y-%m-%d'),
+                "to_date": to_date.strftime('%Y-%m-%d'),
+                "reason": reason,
+                "leave_type":None,
+                "half_day": half_day
+            }
 
-        return {
-            "from_date": from_date.strftime('%Y-%m-%d'),
-            "to_date": to_date.strftime('%Y-%m-%d'),
-            "reason": reason,
-            "leave_type": "Half Day" if half_day else "Full Day",
-            "half_day": half_day
-        }
+        if leave:
+            result["leave_type"]="Half Day" if half_day else "Full Day"
+        if work_from_home:
+            result["leave_type"]="Work From Home"
+            
+        return result
+        
         
     def parse_by_deepseek(self,text):
         print("BY AI API")
@@ -219,6 +250,7 @@ class TelegramLeaveBot:
                 "to_date":"YYYY-MM-DD",
                 "total_days":number,
                 "reason":"short reason",
+                "leave_type":"Full Day/Half Day/Work From Home",
                 "half_day":0
             }}
         """
@@ -247,11 +279,13 @@ class TelegramLeaveBot:
             
             Extract leave details from:"{text}"
             return only valid JSON:
-            {{"from_date":"YYYY-MM-DD",
-            "to_date":"YYYY-MM-DD",
-            "total_days":number,
-            "reason":"short reason",
-            "half_day":number
+            {{
+                "from_date":"YYYY-MM-DD",
+                "to_date":"YYYY-MM-DD",
+                "total_days":number,
+                "reason":"short reason",
+                "leave_type":"Full Day/Half Day/Work From Home",
+                "half_day":number
             }}
         """
         
@@ -313,7 +347,7 @@ class FrappeAPI:
             params={"filters":filters,"fields":fields,"limit":1}
         )
         data=response.json()
-        # print(data)
+        print("\nData",data)
         if data.get("data"):
             return data["data"][0]
         
@@ -341,6 +375,33 @@ class FrappeAPI:
             "doc_name":doc.get("data",{}).get("name"),
             "error":doc.get("message")
         }
+    
+    def create_attendance_request_draft(self,employee_name,from_date,to_date,reason,half_day,leave_type):
+        url=f"{self.frappe_url}/api/resource/Attendance Request"
+        payloads={
+            "employee":employee_name,
+            "from_date":from_date,
+            "to_date":to_date,
+            "reason":reason,
+            "type":leave_type,
+            "half_day":half_day,
+            "posting_date": date.today().isoformat(),
+            "docstatus":0
+        }
+        
+        response=requests.post(
+            url,
+            headers=self.headers,
+            json=payloads
+        )
+        doc=response.json()
+    
+        return{
+            "success":response.status_code==200,
+            "doc_name":doc.get("data",{}).get("name"),
+            "error":doc.get("message")
+        }
+        
         
     def mark_attendance_for_today(self):
         today=date.today().isoformat()
@@ -436,6 +497,7 @@ class FrappeAPI:
             "type":data[0]["type"],
             "name":data[0]["name"]
         }
+        
         
 def start_bot():
     bot=TelegramLeaveBot()
